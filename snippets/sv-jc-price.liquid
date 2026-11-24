@@ -1,0 +1,230 @@
+{%- comment -%}
+  Live jewellery price for a product that has Jewellery Calculator data.
+
+  Prints the price in cents (an integer, so it works with the `money` filters), or prints NOTHING when the
+  product is not set up for the calculator. The caller falls back to the normal Shopify price in that case.
+
+  Usage:
+    {%- capture jc_cents -%}{%- render 'sv-jc-price', product: product -%}{%- endcapture -%}
+    {%- if jc_cents != blank -%}{%- assign price = jc_cents | plus: 0 -%}{%- endif -%}
+
+  With `breakup: true` the same calculation prints a customer-facing "Price breakup" table instead
+  (today's rate, weights, wastage, making charges, stones, value addition, price). Nothing is printed
+  for a product that is not set up, so it can be rendered on every product page:
+    {%- render 'sv-jc-price', product: product, breakup: true -%}
+
+  Same formula as the Jewellery Calc app (the one that writes the variant price), without GST:
+    net = gross - less
+    wastage weight = net x wastage% (rounded to 3 decimals)
+    metal = (net + wastage weight) x today's rate
+    making charge = per gram: MC x net, flat: MC
+    subtotal = metal + making + stones + (second metal)
+    value addition = subtotal x VA% (rounded to 3 decimals)
+    price = subtotal + value addition
+
+  Only used for products the calculator is switched on for ("enabled": true in the saved data; data saved before
+  the switch existed counts as on when a gross weight was entered). With no gross weight the product is priced
+  per 1 gram, i.e. today's rate of the chosen metal. Only single-variant products (the app syncs the first variant
+  only), and only when the rate for the metal is above 0. Cart and checkout keep using the real variant price.
+{%- endcomment -%}
+{%- liquid
+  assign jc_calc = product.metafields.jewellery_calculator.data.value
+  assign jc_rates = shop.metafields.jewellery_rates.daily_rates.value
+  assign jc_show = false
+
+  if jc_calc != blank and jc_rates != blank and product.variants.size == 1
+    assign jc_gross = jc_calc.grossWeight | default: 0 | plus: 0.0
+
+    assign jc_active = false
+    if jc_calc.enabled == true
+      assign jc_active = true
+    elsif jc_calc.enabled == nil and jc_gross > 0
+      assign jc_active = true
+    endif
+
+    assign jc_per_gram = false
+    if jc_active and jc_gross <= 0
+      assign jc_gross = 1.0
+      assign jc_per_gram = true
+    endif
+
+    assign jc_rate = 0.0
+    case jc_calc.metalType
+      when 'gold'
+        case jc_calc.purity
+          when '24k'
+            assign jc_rate = jc_rates.gold_24k | default: 0 | plus: 0.0
+          when '22k'
+            assign jc_rate = jc_rates.gold_22k | default: 0 | plus: 0.0
+          when '18k'
+            assign jc_rate = jc_rates.gold_18k | default: 0 | plus: 0.0
+          when '14k'
+            assign jc_rate = jc_rates.gold_14k | default: 0 | plus: 0.0
+          when '9k'
+            assign jc_rate = jc_rates.gold_9k | default: 0 | plus: 0.0
+        endcase
+      when 'silver'
+        assign jc_rate = jc_rates.silver | default: 0 | plus: 0.0
+      when 'platinum'
+        assign jc_rate = jc_rates.platinum | default: 0 | plus: 0.0
+      when 'diamond'
+        assign jc_rate = jc_rates.diamond | default: 0 | plus: 0.0
+    endcase
+
+    if jc_active and jc_gross > 0 and jc_rate > 0
+      assign jc_less = jc_calc.lessWeight | default: 0 | plus: 0.0
+      if jc_per_gram
+        assign jc_less = 0.0
+      endif
+      assign jc_wastage_pct = jc_calc.wastagePercentage | default: 0 | plus: 0.0
+      assign jc_va_pct = jc_calc.vaPercentage | default: 0 | plus: 0.0
+      assign jc_mc = jc_calc.makingCharge | default: 0 | plus: 0.0
+
+      assign jc_net = jc_gross | minus: jc_less
+      if jc_net < 0
+        assign jc_net = 0.0
+      endif
+
+      assign jc_wastage_wt = jc_net | times: jc_wastage_pct | divided_by: 100.0 | times: 1000 | round | divided_by: 1000.0
+      assign jc_metal = jc_net | plus: jc_wastage_wt | times: jc_rate
+
+      if jc_calc.mcType == 'grm'
+        assign jc_mc_amt = jc_mc | times: jc_net
+      else
+        assign jc_mc_amt = jc_mc
+      endif
+
+      assign jc_stones = 0.0
+      for jc_st in jc_calc.stones
+        assign jc_st_amt = jc_st.amount | default: 0 | plus: 0.0
+        assign jc_stones = jc_stones | plus: jc_st_amt
+      endfor
+
+      assign jc_multi = 0.0
+      assign jc_multi_ok = true
+      if jc_calc.showMultiMetal
+        assign jc_rate2 = 0.0
+        case jc_calc.otherMetalType
+          when 'gold'
+            case jc_calc.otherMetalPurity
+              when '24k'
+                assign jc_rate2 = jc_rates.gold_24k | default: 0 | plus: 0.0
+              when '22k'
+                assign jc_rate2 = jc_rates.gold_22k | default: 0 | plus: 0.0
+              when '18k'
+                assign jc_rate2 = jc_rates.gold_18k | default: 0 | plus: 0.0
+              when '14k'
+                assign jc_rate2 = jc_rates.gold_14k | default: 0 | plus: 0.0
+              when '9k'
+                assign jc_rate2 = jc_rates.gold_9k | default: 0 | plus: 0.0
+            endcase
+          when 'silver'
+            assign jc_rate2 = jc_rates.silver | default: 0 | plus: 0.0
+          when 'platinum'
+            assign jc_rate2 = jc_rates.platinum | default: 0 | plus: 0.0
+          when 'diamond'
+            assign jc_rate2 = jc_rates.diamond | default: 0 | plus: 0.0
+        endcase
+
+        assign jc_w2 = jc_calc.otherMetalWeight | default: 0 | plus: 0.0
+        assign jc_wp2 = jc_calc.otherMetalWastage | default: 0 | plus: 0.0
+        assign jc_mc2 = jc_calc.otherMetalMC | default: 0 | plus: 0.0
+        assign jc_wastage_wt2 = jc_w2 | times: jc_wp2 | divided_by: 100.0 | times: 1000 | round | divided_by: 1000.0
+        if jc_calc.otherMcType == 'grm'
+          assign jc_mc_amt2 = jc_mc2 | times: jc_w2
+        else
+          assign jc_mc_amt2 = jc_mc2
+        endif
+        assign jc_multi = jc_w2 | plus: jc_wastage_wt2 | times: jc_rate2 | plus: jc_mc_amt2
+
+        comment
+          A second metal whose rate is 0 would give a wrong (too low) price, so no live price is shown then.
+        endcomment
+        if jc_w2 > 0 and jc_rate2 <= 0
+          assign jc_multi_ok = false
+        endif
+      endif
+
+      if jc_multi_ok
+        assign jc_subtotal = jc_metal | plus: jc_mc_amt | plus: jc_stones | plus: jc_multi
+        assign jc_va_amt = jc_subtotal | times: jc_va_pct | divided_by: 100.0 | times: 1000 | round | divided_by: 1000.0
+        assign jc_total = jc_subtotal | plus: jc_va_amt
+        assign jc_cents = jc_total | times: 100 | round
+        if jc_cents > 0
+          assign jc_show = true
+        endif
+      endif
+    endif
+  endif
+-%}
+{%- if jc_show -%}
+  {%- if breakup -%}
+    {%- assign jc_unit = 'g' -%}
+    {%- if jc_calc.metalType == 'diamond' -%}{%- assign jc_unit = 'ct' -%}{%- endif -%}
+    {%- assign jc_metal_name = jc_calc.metalType | capitalize -%}
+    {%- if jc_calc.metalType == 'gold' and jc_calc.purity != blank -%}
+      {%- assign jc_purity_label = jc_calc.purity | upcase -%}
+      {%- assign jc_metal_name = jc_metal_name | append: ' ' | append: jc_purity_label -%}
+    {%- endif -%}
+    {%- assign jc_rate_date = jc_rates.date | split: ' ' | first -%}
+    <details class="sv-breakup" data-sv-breakup>
+      <style>
+        .sv-breakup{margin:16px 0;border:1px solid rgba(0,0,0,.12);border-radius:10px;overflow:hidden;font-size:13.5px;line-height:1.45}
+        .sv-breakup__title{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;font-weight:700;background:rgba(0,0,0,.04);letter-spacing:.01em;cursor:pointer;list-style:none;user-select:none}
+        .sv-breakup__title::-webkit-details-marker{display:none}
+        .sv-breakup__title::after{content:"+";font-size:18px;line-height:1;font-weight:600}
+        .sv-breakup[open] > .sv-breakup__title::after{content:"\2212"}
+        .sv-breakup__list{margin:0;padding:0}
+        .sv-breakup__row{display:flex;justify-content:space-between;gap:16px;padding:8px 14px;border-top:1px solid rgba(0,0,0,.07)}
+        .sv-breakup__row dt{margin:0;opacity:.7}
+        .sv-breakup__row dd{margin:0;text-align:right;font-weight:600;white-space:nowrap}
+        .sv-breakup__row--sub dt{opacity:1;font-weight:600}
+        .sv-breakup__row--total{font-size:1.05em;background:rgba(0,0,0,.04)}
+        .sv-breakup__row--total dt{opacity:1;font-weight:700}
+        .sv-breakup__row--total dd{font-weight:800}
+        .sv-breakup__note{padding:8px 14px;border-top:1px solid rgba(0,0,0,.07);font-size:12px;opacity:.65}
+      </style>
+      <summary class="sv-breakup__title">Price breakup</summary>
+      <dl class="sv-breakup__list">
+        <div class="sv-breakup__row"><dt>Metal</dt><dd>{{ jc_metal_name }}</dd></div>
+        <div class="sv-breakup__row"><dt>Today's rate</dt><dd>{{ jc_rate | times: 100 | round | money }} / {{ jc_unit }}</dd></div>
+        {%- unless jc_per_gram -%}
+          <div class="sv-breakup__row"><dt>Gross weight</dt><dd>{{ jc_gross | round: 3 }} {{ jc_unit }}</dd></div>
+          {%- if jc_less > 0 -%}
+            <div class="sv-breakup__row"><dt>Less weight</dt><dd>{{ jc_less | round: 3 }} {{ jc_unit }}</dd></div>
+          {%- endif -%}
+          <div class="sv-breakup__row"><dt>Net weight</dt><dd>{{ jc_net | round: 3 }} {{ jc_unit }}</dd></div>
+          {%- if jc_wastage_wt > 0 -%}
+            <div class="sv-breakup__row"><dt>Wastage ({{ jc_wastage_pct | round: 2 }}%)</dt><dd>{{ jc_wastage_wt | round: 3 }} {{ jc_unit }}</dd></div>
+          {%- endif -%}
+          <div class="sv-breakup__row sv-breakup__row--sub"><dt>Metal value</dt><dd>{{ jc_metal | times: 100 | round | money }}</dd></div>
+        {%- endunless -%}
+        {%- if jc_mc_amt > 0 -%}
+          <div class="sv-breakup__row">
+            <dt>Making charges{% if jc_calc.mcType == 'grm' %} ({{ jc_mc | times: 100 | round | money }} / {{ jc_unit }}){% endif %}</dt>
+            <dd>{{ jc_mc_amt | times: 100 | round | money }}</dd>
+          </div>
+        {%- endif -%}
+        {%- for jc_st in jc_calc.stones -%}
+          {%- assign jc_st_amt = jc_st.amount | default: 0 | plus: 0.0 -%}
+          {%- if jc_st_amt > 0 -%}
+            {%- assign jc_st_w = jc_st.wgt | default: jc_st.weight -%}
+            {%- assign jc_st_u = jc_st.wgtType | default: jc_st.caratGram -%}
+            <div class="sv-breakup__row">
+              <dt>{{ jc_st.name | default: jc_st.type | capitalize }}{% if jc_st.pcs != blank %} · {{ jc_st.pcs }} pcs{% endif %}{% if jc_st_w != blank %} · {{ jc_st_w }} {% if jc_st_u == 'carat' %}ct{% else %}{{ jc_st_u }}{% endif %}{% endif %}</dt>
+              <dd>{{ jc_st_amt | times: 100 | round | money }}</dd>
+            </div>
+          {%- endif -%}
+        {%- endfor -%}
+        {%- if jc_multi > 0 -%}
+          <div class="sv-breakup__row"><dt>{{ jc_calc.otherMetalType | capitalize }}</dt><dd>{{ jc_multi | times: 100 | round | money }}</dd></div>
+        {%- endif -%}
+        {%- if jc_va_amt > 0 -%}
+          <div class="sv-breakup__row"><dt>Value addition ({{ jc_va_pct | round: 2 }}%)</dt><dd>{{ jc_va_amt | times: 100 | round | money }}</dd></div>
+        {%- endif -%}
+        <div class="sv-breakup__row sv-breakup__row--total"><dt>Price{% if jc_per_gram %} (per {{ jc_unit }}){% endif %}</dt><dd>{{ jc_cents | plus: 0 | money }}</dd></div>
+      </dl>
+      <div class="sv-breakup__note">{% if jc_rate_date != blank %}Rates as on {{ jc_rate_date }}. {% endif %}Price is before GST.</div>
+    </details>
+  {%- else -%}{{ jc_cents }}{%- endif -%}
+{%- endif -%}
